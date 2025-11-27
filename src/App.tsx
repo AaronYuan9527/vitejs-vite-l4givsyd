@@ -1,11 +1,10 @@
 /**
  * ============================================================================
- * 🚀 業績戰情室 - 最終極速版 (Local Cache + No Password UI)
+ * 🚀 業績戰情室 - 權限控管與同步整合版
  * ============================================================================
- * 優化內容：
- * 1. [UI] 移除 API 密碼輸入框 (背景自動處理)。
- * 2. [UX] 實作資料快取 (localStorage)，達成「秒開」體驗。
- * 3. [UX] 採用「背景更新」策略，優先顯示舊資料，不卡轉圈圈。
+ * 1. [Admin] 新增「權限管理」頁面，可設定每個使用者的可視欄位。
+ * 2. [Auth] 登入時從 Google Sheet 讀取權限設定。
+ * 3. [Data] 資料顯示會根據 user.permissions 自動過濾。
  * ============================================================================
  */
 
@@ -16,16 +15,14 @@ import {
   Link as LinkIcon, FileSpreadsheet, HelpCircle, Lock, ShieldCheck, 
   Activity, Wand2, AlertTriangle, ExternalLink, Play, Filter, PieChart, 
   Lightbulb, Save, Trash2, Tag, LayoutDashboard, MapPin, Building2, 
-  UserCheck, List, Trophy, Calculator, LogOut, Shield, Key, Eye, EyeOff, Plus, LogIn, Mail, Check, Download
+  UserCheck, List, Trophy, Calculator, LogOut, Shield, Key, Eye, EyeOff, Plus, LogIn, Mail, Check, Zap
 } from 'lucide-react';
 
-// --- 內部設定 ---
-// 這是後端 GAS 腳本中設定的簡易密碼，前端直接內建即可，不需要使用者輸入
-const INTERNAL_API_KEY = "vgv2025"; 
-// 預設 GAS URL
-const DEFAULT_GAS_URL = ""; 
+// --- 核心設定 ---
+// 請填入您部署後的 GAS 網址
+const DEFAULT_GAS_URL = "https://script.google.com/macros/s/AKfycbzb-M9BJ3uCvdqdR2VtO9mPMfarv1-JQdMJTmJfVQ-2pDxZjq7_02aIKGCWSahbWExYuQ/exec";
 
-// 資料欄位定義
+// 資料欄位定義 (k: key用於程式邏輯, l: label顯示名稱)
 const DATA_FIELDS = [
     { k: 'date', l: '進件日期', i: Activity },
     { k: 'amount', l: '金額', i: DollarSign },
@@ -55,7 +52,6 @@ const cleanNumber = (value) => {
 
 const formatDate = (dateStr) => {
     if (!dateStr) return '';
-    // 嘗試解析日期
     const d = new Date(dateStr);
     if (!isNaN(d.getTime())) {
         return d.toISOString().split('T')[0];
@@ -71,26 +67,21 @@ const cleanText = (str) => {
 const normalizeCountry = (country, currency) => {
     const c = String(country || '').trim().toLowerCase();
     const cur = String(currency || '').trim().toUpperCase().replace(/\s/g, ''); 
-    
     if (c.includes('taiwan') || c.includes('台灣') || c.includes('tw')) return '台灣';
     if (c.includes('overseas') || c.includes('海外') || c.includes('foreign')) return '海外';
-    
     if (cur.includes('TWD') || cur.includes('NT') || cur.includes('臺幣') || cur.includes('台幣')) return '台灣';
-    
     return '海外'; 
 };
 
 const formatCurrency = (val) => {
     if (val === undefined || val === null) return '$0';
-    // 如果是被遮蔽的資料
     if (val === '***' || (typeof val === 'string' && val.includes('🔒'))) return '🔒'; 
-    
     const num = Number(val);
     if (isNaN(num)) return '$0';
     return num.toLocaleString(undefined, { maximumFractionDigits: 0 });
 };
 
-// --- UI Components ---
+// --- Components ---
 
 // 1. Error Boundary
 class ErrorBoundary extends React.Component {
@@ -231,7 +222,13 @@ const MarketAnalysisSection = ({ transactions }) => {
             }
 
             if (!monthMap[monthKey]) {
-                monthMap[monthKey] = { month: monthKey, total: 0, sortKey: date.getTime(), taiwan: 0, overseas: 0, newClient: 0, oldClient: 0 };
+                monthMap[monthKey] = { 
+                    month: monthKey, 
+                    total: 0, 
+                    sortKey: date.getTime(),
+                    taiwan: 0, overseas: 0,
+                    newClient: 0, oldClient: 0
+                };
             }
 
             monthMap[monthKey].total += amt;
@@ -339,7 +336,7 @@ const DetailModal = ({ title, icon: Icon, transactions, onClose }) => {
             </tbody>
           </table>
         </div>
-        <div className="px-8 py-5 border-t border-slate-100 bg-slate-50/50 rounded-b-2xl flex justify-end items-center gap-4"><span className="text-sm text-slate-500 font-medium">總計金額</span><span className="text-2xl font-bold text-indigo-600 font-mono tracking-tight">{formatCurrency(transactions.reduce((sum, t) => sum + (typeof t.finalAmount === 'number' ? t.finalAmount : 0), 0))}</span></div>
+        <div className="px-8 py-5 border-t border-slate-100 bg-slate-50/50 rounded-b-2xl flex justify-end items-center gap-4"><span className="text-sm text-slate-500 font-medium">總計金額</span><span className="text-2xl font-bold text-indigo-600 font-mono tracking-tight">{formatCurrency(transactions.reduce((sum, t) => sum + (typeof t.amount === 'number' ? t.amount : 0), 0))}</span></div>
       </div>
     </div>
   );
@@ -400,7 +397,6 @@ const Dashboard = ({ transactions, loading, error, onRefresh, user }) => {
   const [exchangeRate, setExchangeRate] = useState(32.5); 
   
   useEffect(() => {
-    // Simple fetch for rate
     fetch('https://api.exchangerate-api.com/v4/latest/USD')
         .then(res => res.json())
         .then(data => { if (data?.rates?.TWD) setExchangeRate(data.rates.TWD); })
@@ -418,7 +414,6 @@ const Dashboard = ({ transactions, loading, error, onRefresh, user }) => {
     return { availableYears: Array.from(years).sort().reverse(), availableAgents: Array.from(agents).sort(), availableStatuses: Array.from(statuses).sort(), availableIndustries: Array.from(industries).sort() };
   }, [transactions]);
 
-  // Pre-calculate client counts for New/Old logic
   const clientCounts = useMemo(() => {
       const counts = {};
       transactions.forEach(t => {
@@ -431,7 +426,7 @@ const Dashboard = ({ transactions, loading, error, onRefresh, user }) => {
   const filteredData = useMemo(() => {
     return transactions.map(t => {
         let finalAmount = t.amount;
-        if (typeof finalAmount !== 'number') return null; // Skip invalid amounts
+        if (typeof finalAmount !== 'number') return null; 
 
         const currencyCode = t.currency ? String(t.currency).toUpperCase() : '臺幣';
         let isUSD = false;
@@ -480,39 +475,33 @@ const Dashboard = ({ transactions, loading, error, onRefresh, user }) => {
     const bdMap = {};
     const industryMap = {};
     const clientMap = {};
-    
     filteredData.forEach(t => {
       totalRevenue += t.finalAmount;
-      
       const bdName = t.agentName || 'Unknown';
       if (!bdMap[bdName]) bdMap[bdName] = { name: bdName, revenue: 0, count: 0 };
       bdMap[bdName].revenue += t.finalAmount;
       bdMap[bdName].count += 1;
-
       const indName = t.industry || '未分類';
       if (!industryMap[indName]) industryMap[indName] = { name: indName, revenue: 0, count: 0 };
       industryMap[indName].revenue += t.finalAmount;
       industryMap[indName].count += 1;
-
       const clientName = t.brandName || t.projectName || 'Unknown';
       if (!clientMap[clientName]) clientMap[clientName] = { name: clientName, revenue: 0, count: 0 };
       clientMap[clientName].revenue += t.finalAmount;
       clientMap[clientName].count += 1;
     });
-
     const bdRanking = Object.values(bdMap).sort((a, b) => b.revenue - a.revenue);
     const industryRanking = Object.values(industryMap).map(ind => ({ ...ind, share: totalRevenue > 0 ? Math.round((ind.revenue / totalRevenue) * 100) : 0 })).sort((a, b) => b.revenue - a.revenue);
     const clientRanking = Object.values(clientMap).sort((a, b) => b.revenue - a.revenue).slice(0, 50);
-
     return { totalRevenue, bdRanking, industryRanking, clientRanking, totalCount: filteredData.length };
   }, [filteredData]);
 
   if (error) return (<div className="p-12 flex flex-col items-center justify-center text-center h-full"><div className="bg-red-50 p-6 rounded-full mb-6 shadow-sm"><AlertCircle size={56} className="text-red-500" /></div><h3 className="text-2xl font-bold text-slate-800 mb-3">資料讀取失敗</h3><p className="text-slate-500 mb-8 max-w-lg">{error}</p><button onClick={onRefresh} className="px-6 py-3 bg-blue-600 text-white rounded-xl font-bold shadow-lg">重試連線</button></div>);
-  if (loading && transactions.length === 0) return (<div className="flex flex-col items-center justify-center h-96 text-center"><RefreshCw className="animate-spin text-indigo-600 mb-4" size={40}/><p className="text-slate-500">正在從 Google Sheet 載入資料...</p></div>);
+  
+  if (loading && transactions.length === 0) return (<div className="flex flex-col items-center justify-center h-96 text-center"><RefreshCw className="animate-spin text-indigo-600 mb-4" size={40}/><p className="text-slate-500">正在更新資料...</p></div>);
 
   return (
     <div className="space-y-8 relative max-w-[1600px] mx-auto pb-12">
-      {/* Modals */}
       {selectedBD && <DetailModal title={selectedBD} icon={Users} transactions={filteredData.filter(t => (t.agentName || 'Unknown') === selectedBD)} onClose={() => setSelectedBD(null)} />}
       {selectedIndustry && <DetailModal title={selectedIndustry} icon={Briefcase} transactions={filteredData.filter(t => (t.industry || '未分類') === selectedIndustry)} onClose={() => setSelectedIndustry(null)} />}
       {selectedClient && <DetailModal title={selectedClient} icon={Building2} transactions={filteredData.filter(t => (t.brandName || t.projectName || 'Unknown') === selectedClient)} onClose={() => setSelectedClient(null)} />}
@@ -529,7 +518,11 @@ const Dashboard = ({ transactions, loading, error, onRefresh, user }) => {
            <select className="bg-white border border-slate-200 rounded-xl text-sm py-2.5 pl-3 pr-8 outline-none focus:ring-2 focus:ring-indigo-100 hover:border-indigo-300 transition-all shadow-sm" value={agentFilter} onChange={e => setAgentFilter(e.target.value)}><option value="All">👨‍💼 所有業務</option>{availableAgents.map(a => <option key={a} value={a}>{a}</option>)}</select>
            <select className="bg-white border border-slate-200 rounded-xl text-sm py-2.5 pl-3 pr-8 outline-none focus:ring-2 focus:ring-indigo-100 hover:border-indigo-300 transition-all shadow-sm" value={industryFilter} onChange={e => setIndustryFilter(e.target.value)}><option value="All">🏭 所有產業</option>{availableIndustries.map(i => <option key={i} value={i}>{i}</option>)}</select>
            <select className="bg-white border border-slate-200 rounded-xl text-sm py-2.5 pl-3 pr-8 outline-none focus:ring-2 focus:ring-indigo-100 hover:border-indigo-300 transition-all shadow-sm" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}><option value="All">🏷️ 新舊客篩選 (全部)</option><option value="新客戶">✨ 新客戶</option><option value="續約客戶">🤝 續約客戶</option></select>
-           <div className="ml-auto flex items-center gap-3"><div className="hidden lg:flex items-center bg-amber-50 text-amber-700 px-3 py-1.5 rounded-full text-xs font-medium border border-amber-100 shadow-sm"><Globe size={12} className="mr-1.5"/> USD 匯率: {exchangeRate}</div><button onClick={onRefresh} disabled={loading} className="p-2.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-all active:scale-95" title="重新整理"><RefreshCw size={18} className={loading ? 'animate-spin' : ''} /></button></div>
+           <div className="ml-auto flex items-center gap-3">
+               {loading && <div className="flex items-center text-xs text-indigo-500 bg-indigo-50 px-2 py-1 rounded-lg animate-pulse"><RefreshCw size={12} className="animate-spin mr-1"/> 更新中...</div>}
+               <div className="hidden lg:flex items-center bg-amber-50 text-amber-700 px-3 py-1.5 rounded-full text-xs font-medium border border-amber-100 shadow-sm"><Globe size={12} className="mr-1.5"/> USD 匯率: {exchangeRate}</div>
+               <button onClick={onRefresh} disabled={loading} className="p-2.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-all active:scale-95" title="重新整理"><RefreshCw size={18} className={loading ? 'animate-spin' : ''} /></button>
+           </div>
         </div>
       </div>
 
@@ -581,10 +574,98 @@ const Dashboard = ({ transactions, loading, error, onRefresh, user }) => {
   );
 };
 
+// --- Admin Panel Component ---
+const AdminPanel = ({ users, onSave, onRefreshUsers, loading }) => {
+    const [editedUsers, setEditedUsers] = useState([]);
+    const [newUserEmail, setNewUserEmail] = useState('');
+    const [isSaving, setIsSaving] = useState(false);
+
+    useEffect(() => {
+        if (users) setEditedUsers(JSON.parse(JSON.stringify(users)));
+    }, [users]);
+
+    const handlePermissionChange = (email, field, checked) => {
+        setEditedUsers(prev => prev.map(u => {
+            if (u.email === email) {
+                const perms = u.permissions === 'all' ? DATA_FIELDS.map(f=>f.k) : u.permissions.split(',').map(s=>s.trim());
+                let newPerms;
+                if (checked) newPerms = [...perms, field];
+                else newPerms = perms.filter(p => p !== field);
+                return { ...u, permissions: newPerms.join(',') };
+            }
+            return u;
+        }));
+    };
+
+    const handleRoleChange = (email, role) => {
+        setEditedUsers(prev => prev.map(u => u.email === email ? { ...u, role } : u));
+    };
+    
+    const handleAddUser = () => {
+        if (!newUserEmail || !newUserEmail.includes('@')) return alert('Email 無效');
+        setEditedUsers(prev => [...prev, { email: newUserEmail.toLowerCase(), name: newUserEmail.split('@')[0], role: 'viewer', permissions: 'date,amount' }]);
+        setNewUserEmail('');
+    };
+
+    const saveChanges = async () => {
+        if (!confirm('確定要儲存所有變更嗎？')) return;
+        setIsSaving(true);
+        for (const user of editedUsers) {
+            // 逐一儲存 (GAS 限制較多，建議逐筆或改為批次 API，這裡用簡單迴圈)
+            await onSave(user); 
+        }
+        setIsSaving(false);
+        alert('儲存完成');
+        onRefreshUsers();
+    };
+
+    return (
+        <div className="max-w-6xl mx-auto mt-8 p-6 bg-white rounded-2xl shadow-sm border border-slate-100">
+            <div className="flex justify-between items-center mb-6">
+                <h2 className="text-xl font-bold text-slate-800 flex items-center"><Settings className="mr-2"/> 權限管理後台</h2>
+                <button onClick={saveChanges} disabled={isSaving} className="bg-indigo-600 text-white px-4 py-2 rounded-lg font-bold flex items-center hover:bg-indigo-700 disabled:opacity-50">
+                    {isSaving ? <RefreshCw className="animate-spin mr-2"/> : <Save className="mr-2"/>} 確認並儲存
+                </button>
+            </div>
+            
+            <div className="flex gap-2 mb-6">
+                <input type="email" className="border p-2 rounded-lg flex-1" placeholder="輸入新使用者 Email" value={newUserEmail} onChange={e => setNewUserEmail(e.target.value)}/>
+                <button onClick={handleAddUser} className="bg-emerald-500 text-white px-4 py-2 rounded-lg hover:bg-emerald-600"><Plus/></button>
+            </div>
+
+            <div className="space-y-4">
+                {editedUsers.map((user, idx) => (
+                    <div key={idx} className="border p-4 rounded-xl bg-slate-50">
+                        <div className="flex justify-between items-center mb-3">
+                            <div className="font-bold text-slate-700 flex items-center"><Mail size={16} className="mr-2"/> {user.email}</div>
+                            <select value={user.role} onChange={(e) => handleRoleChange(user.email, e.target.value)} className="border rounded p-1 text-sm">
+                                <option value="viewer">檢視者</option>
+                                <option value="admin">管理員</option>
+                            </select>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                            {DATA_FIELDS.map(f => {
+                                const isChecked = user.permissions === 'all' || user.permissions.includes(f.k);
+                                return (
+                                    <label key={f.k} className={`flex items-center px-3 py-1.5 rounded-lg border text-xs cursor-pointer transition-colors ${isChecked ? 'bg-indigo-100 border-indigo-200 text-indigo-700' : 'bg-white border-slate-200 text-slate-400'}`}>
+                                        <input type="checkbox" className="hidden" checked={isChecked} onChange={(e) => handlePermissionChange(user.email, f.k, e.target.checked)}/>
+                                        {isChecked ? <Eye size={12} className="mr-1.5"/> : <EyeOff size={12} className="mr-1.5"/>} {f.l}
+                                    </label>
+                                );
+                            })}
+                        </div>
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+};
+
 // --- Login Screen ---
 const LoginScreen = ({ onLogin, error }) => {
   const [email, setEmail] = useState('');
   const [loggingIn, setLoggingIn] = useState(false);
+  
   const handleLogin = async () => {
     if(!email) return;
     setLoggingIn(true);
@@ -597,7 +678,7 @@ const LoginScreen = ({ onLogin, error }) => {
       <div className="bg-white p-8 rounded-3xl shadow-xl shadow-slate-200 w-full max-w-md text-center border border-slate-100">
         <div className="w-20 h-20 bg-indigo-600 text-white rounded-3xl flex items-center justify-center mx-auto mb-6 shadow-lg shadow-indigo-200"><ShieldCheck size={40} /></div>
         <h2 className="text-3xl font-bold text-slate-800 mb-3">業績戰情室</h2>
-        <p className="text-slate-500 mb-8 text-sm leading-relaxed">Google Sheet 直連版<br/><span className="text-xs text-slate-400">請輸入您的 Email 以存取系統</span></p>
+        <p className="text-slate-500 mb-8 text-sm leading-relaxed">Google Sheet 直連版<br/><span className="text-xs text-slate-400">請輸入您的 Email 以存取系統 (白名單驗證)</span></p>
         <div className="text-left mb-6">
             <label className="block text-xs font-bold text-slate-500 mb-2 uppercase tracking-wider ml-1">Email Address</label>
             <input type="email" className="w-full border border-slate-200 rounded-xl p-3.5 outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all bg-slate-50 focus:bg-white" placeholder="name@company.com" value={email} onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleLogin()} />
@@ -610,54 +691,36 @@ const LoginScreen = ({ onLogin, error }) => {
   )
 }
 
-// --- Sheet Setup Component ---
-const SheetSetup = ({ onSave }) => {
-  const [url, setUrl] = useState('');
-  
-  const handleSave = () => {
-      if (!url.includes('script.google.com')) {
-          alert("請輸入有效的 Google Apps Script 網址");
-          return;
-      }
-      onSave(url);
-  };
-
-  return (
-      <div className="max-w-2xl mx-auto mt-10">
-          <div className="bg-white p-8 rounded-3xl shadow-xl border border-slate-100">
-              <h3 className="text-2xl font-bold text-slate-800 text-center mb-6">系統初始化設定</h3>
-              <p className="text-slate-500 text-center mb-8 text-sm">請輸入您部署的 Google Apps Script (Web App) 網址。</p>
-              <input type="text" className="w-full border border-slate-200 rounded-xl p-3 mb-4" placeholder="https://script.google.com/macros/s/..." value={url} onChange={e => setUrl(e.target.value)} />
-              <button onClick={handleSave} className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold">儲存並連線</button>
-          </div>
-      </div>
-  );
-};
-
 // --- Main App Component ---
 export default function SalesApp() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [transactions, setTransactions] = useState([]);
-  const [gasUrl, setGasUrl] = useState(() => localStorage.getItem('vgv_gas_url') || DEFAULT_GAS_URL);
-  const [isSetup, setIsSetup] = useState(() => !!localStorage.getItem('vgv_gas_url'));
+  const [adminUsers, setAdminUsers] = useState([]); // For admin panel
+  const [activeTab, setActiveTab] = useState('dashboard');
 
-  // 1. Check LocalStorage for existing session
+  const gasUrl = DEFAULT_GAS_URL; 
+
+  // 1. Check LocalStorage for existing session (秒開關鍵)
   useEffect(() => {
       const savedUser = localStorage.getItem('vgv_user');
-      // 先載入已快取的使用者，讓畫面秒開
       if (savedUser) {
-          const parsedUser = JSON.parse(savedUser);
-          setUser(parsedUser);
-          // 嘗試載入快取的交易資料 (如果有)
-          const savedData = localStorage.getItem('vgv_data');
-          if (savedData) {
-             setTransactions(JSON.parse(savedData));
+          try {
+              const parsedUser = JSON.parse(savedUser);
+              setUser(parsedUser);
+              
+              // 嘗試載入快取的交易資料
+              const savedData = localStorage.getItem('vgv_data');
+              if (savedData) {
+                 setTransactions(JSON.parse(savedData));
+              }
+              
+              // 背景執行更新
+              fetchData(parsedUser);
+          } catch(e) {
+              localStorage.removeItem('vgv_user');
           }
-          
-          // 背景執行更新
-          fetchData(parsedUser);
       }
   }, []);
 
@@ -667,104 +730,106 @@ export default function SalesApp() {
       try {
           const formData = new FormData();
           formData.append('action', 'login');
-          formData.append('password', INTERNAL_API_KEY);
           formData.append('email', email);
 
-          // Use POST to avoid URL length limits and cleaner URL
-          const res = await fetch(gasUrl, {
-              method: 'POST',
-              body: formData
-          });
-          
+          const res = await fetch(gasUrl, { method: 'POST', body: formData });
           const json = await res.json();
+
           if (json.status === 'success') {
               setUser(json.user);
               localStorage.setItem('vgv_user', JSON.stringify(json.user));
-              fetchData(json.user); // Fetch data immediately after login
+              fetchData(json.user); 
           } else {
-              setError(json.message || '登入失敗，請確認 Email 或權限');
+              setError(json.message || '登入失敗');
           }
       } catch (e) {
           console.error(e);
-          setError('連線錯誤，請確認 GAS 網址是否正確或稍後再試');
+          setError('連線錯誤');
       } finally {
           setLoading(false);
       }
   };
 
   const fetchData = async (currentUser) => {
-      // Only show loading spinner if we don't have data yet
       if (transactions.length === 0) setLoading(true);
-      
       try {
           const formData = new FormData();
           formData.append('action', 'getData');
-          formData.append('password', INTERNAL_API_KEY);
-
-          const res = await fetch(gasUrl, {
-              method: 'POST',
-              body: formData
-          });
-
+          const res = await fetch(gasUrl, { method: 'POST', body: formData });
           const json = await res.json();
+
           if (json.status === 'success') {
-              // Filter columns based on user permissions
               const perms = (currentUser.permissions || '').toLowerCase();
               const allowedFields = perms === 'all' ? DATA_FIELDS.map(f => f.k) : perms.split(',').map(s => s.trim());
               
               const mappedData = json.data.map(row => {
                   const newRow = {};
-                  // Mapping: Map raw sheet data to our schema
-                  newRow.date = row['日期'] || row['Date'] || row['進件日期'];
-                  newRow.amount = cleanNumber(row['金額'] || row['Amount'] || row['總金額']);
-                  newRow.currency = cleanText(row['幣別'] || row['Currency']);
-                  newRow.agentName = cleanText(row['業務'] || row['Agent'] || row['業務姓名']);
-                  newRow.brandName = cleanText(row['品牌'] || row['Brand'] || row['品牌名稱']);
-                  newRow.projectName = cleanText(row['專案'] || row['Project'] || row['專案名稱']);
-                  newRow.industry = cleanText(row['產業'] || row['Industry'] || row['產業分類']);
-                  newRow.status = cleanText(row['狀態'] || row['Status'] || row['客戶狀態']);
-                  newRow.country = cleanText(row['國家'] || row['Country'] || row['國別']);
+                  // Mapping (Ensure these match your Google Sheet headers exactly)
+                  newRow.date = row['進件日期'];
+                  newRow.amount = cleanNumber(row['金額']);
+                  newRow.currency = cleanText(row['幣別']);
+                  newRow.agentName = cleanText(row['業務姓名']);
+                  newRow.brandName = cleanText(row['品牌名稱']);
+                  newRow.projectName = cleanText(row['專案名稱']);
+                  newRow.industry = cleanText(row['產業分類']);
+                  newRow.status = cleanText(row['客戶狀態']);
+                  newRow.country = cleanText(row['國別']);
 
-                  // Permission Filtering: Mask unauthorized fields
                   if (perms !== 'all') {
-                      if (!allowedFields.includes('amount')) newRow.amount = 0; 
-                      // You can add other field masking here if needed, e.g.:
-                      // if (!allowedFields.includes('agentName')) newRow.agentName = '***';
+                      // Mask fields not in permission list
+                      DATA_FIELDS.forEach(field => {
+                           if (!allowedFields.includes(field.k)) {
+                               // For numbers set to 0, for strings set to masked
+                               if (field.k === 'amount') newRow[field.k] = 0;
+                               else newRow[field.k] = '🔒';
+                           }
+                      });
                   }
                   return newRow;
               });
 
               setTransactions(mappedData);
-              // Cache data for next load
               localStorage.setItem('vgv_data', JSON.stringify(mappedData));
-          } else {
-              setError(json.message);
           }
       } catch (e) {
           console.error(e);
-          // If fetch fails but we have cached data, don't show error to user immediately
-          if (transactions.length === 0) setError('資料讀取失敗');
       } finally {
           setLoading(false);
       }
+  };
+  
+  const fetchUsers = async () => {
+      if (user?.role !== 'admin') return;
+      const formData = new FormData();
+      formData.append('action', 'getUsers');
+      const res = await fetch(gasUrl, { method: 'POST', body: formData });
+      const json = await res.json();
+      if (json.status === 'success') setAdminUsers(json.users);
+  };
+
+  const saveUserConfig = async (userData) => {
+      const formData = new FormData();
+      formData.append('action', 'saveUser');
+      formData.append('targetEmail', userData.email);
+      formData.append('role', userData.role);
+      formData.append('permissions', userData.permissions);
+      formData.append('name', userData.name);
+      await fetch(gasUrl, { method: 'POST', body: formData });
   };
 
   const handleLogout = () => {
       setUser(null);
       setTransactions([]);
       localStorage.removeItem('vgv_user');
-      localStorage.removeItem('vgv_data'); // Clear data cache on logout
-  };
-  
-  const handleSaveSetup = (url) => {
-      setGasUrl(url);
-      localStorage.setItem('vgv_gas_url', url);
-      setIsSetup(true);
+      localStorage.removeItem('vgv_data');
   };
 
-  if (!isSetup) {
-      return <SheetSetup onSave={handleSaveSetup} />;
-  }
+  // Effect to load users when entering admin tab
+  useEffect(() => {
+      if (activeTab === 'settings' && user?.role === 'admin') {
+          fetchUsers();
+      }
+  }, [activeTab, user]);
 
   if (!user) {
       return <LoginScreen onLogin={handleLogin} error={error} />;
@@ -799,7 +864,10 @@ export default function SalesApp() {
             </div>
 
             <nav className="p-4 flex flex-row lg:flex-col gap-2 lg:mt-2">
-              <button className={`flex items-center px-5 py-3.5 rounded-xl text-sm font-bold transition-all duration-200 bg-indigo-50 text-indigo-600 shadow-sm`}><TrendingUp size={20} className="mr-3" />總覽儀表板</button>
+              <button onClick={() => setActiveTab('dashboard')} className={`flex items-center px-5 py-3.5 rounded-xl text-sm font-bold transition-all duration-200 ${activeTab === 'dashboard' ? 'bg-indigo-50 text-indigo-600 shadow-sm' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900'}`}><TrendingUp size={20} className="mr-3" />總覽儀表板</button>
+              {user.role === 'admin' && (
+                  <button onClick={() => setActiveTab('settings')} className={`flex items-center px-5 py-3.5 rounded-xl text-sm font-bold transition-all duration-200 ${activeTab === 'settings' ? 'bg-indigo-50 text-indigo-600 shadow-sm' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900'}`}><Settings size={20} className="mr-3" />權限管理</button>
+              )}
               <button onClick={handleLogout} className="flex items-center px-5 py-3.5 rounded-xl text-sm font-bold text-slate-400 hover:bg-red-50 hover:text-red-600 transition-all duration-200 mt-auto lg:mt-4"><LogOut size={20} className="mr-3" />登出</button>
             </nav>
 
@@ -810,7 +878,11 @@ export default function SalesApp() {
             </div>
           </aside>
           <main className="flex-1 p-4 lg:p-10 overflow-y-auto bg-[#f8fafc]">
-               <Dashboard transactions={transactions} loading={loading} error={error} onRefresh={() => fetchData(user)} user={user} />
+               {activeTab === 'dashboard' ? (
+                   <Dashboard transactions={transactions} loading={loading} error={error} onRefresh={() => fetchData(user)} user={user} />
+               ) : (
+                   <AdminPanel users={adminUsers} onSave={saveUserConfig} onRefreshUsers={fetchUsers} loading={loading}/>
+               )}
           </main>
         </div>
       </ErrorBoundary>
