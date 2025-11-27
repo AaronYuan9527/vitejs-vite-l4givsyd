@@ -1,3 +1,14 @@
+/**
+ * ============================================================================
+ * 🚀 業績戰情室 - Google Sheet 權限控管版 (最終優化)
+ * ============================================================================
+ * 修改重點：
+ * 1. 移除 API 密碼輸入 (背景自動處理)。
+ * 2. 移除前端權限設定 (完全依賴 Google Sheet 的 Users 分頁)。
+ * 3. 極速載入優化：優先讀取 LocalStorage，達成「秒開」體驗。
+ * ============================================================================
+ */
+
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Users, DollarSign, TrendingUp, BarChart2, Briefcase, Settings, 
@@ -5,15 +16,14 @@ import {
   Link as LinkIcon, FileSpreadsheet, HelpCircle, Lock, ShieldCheck, 
   Activity, Wand2, AlertTriangle, ExternalLink, Play, Filter, PieChart, 
   Lightbulb, Save, Trash2, Tag, LayoutDashboard, MapPin, Building2, 
-  UserCheck, List, Trophy, Calculator, LogOut, Shield, Key, Eye, EyeOff, Plus, LogIn, Mail
+  UserCheck, List, Trophy, Calculator, LogOut, Shield, Key, Eye, EyeOff, Plus, LogIn, Mail, Check
 } from 'lucide-react';
 
-// --- ⚙️ 設定區 (請填入您的 GAS 網址) ---
-// 請將下方的網址替換為您部署 Google Apps Script 後取得的 "Web App URL"
-const GAS_API_URL = "https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec"; 
-const API_KEY = "vgv2025"; // 需與 GAS 中的 API_KEY 一致
+// --- 內部常數 ---
+// 這是後端 GAS 腳本中設定的簡易密碼，前端直接內建即可，不需要使用者輸入
+const INTERNAL_API_KEY = "vgv2025"; 
 
-// --- Data Fields Definition ---
+// Data Fields Definition
 const DATA_FIELDS = [
     { k: 'date', l: '進件日期', i: Activity },
     { k: 'amount', l: '金額', i: DollarSign },
@@ -27,40 +37,85 @@ const DATA_FIELDS = [
 ];
 
 // --- Helper Functions ---
+const getQuarter = (date) => {
+  if (!date) return '';
+  const d = new Date(date);
+  if (isNaN(d.getTime())) return '';
+  const month = d.getMonth() + 1;
+  return Math.ceil(month / 3);
+};
+
 const cleanNumber = (value) => {
     if (!value) return 0;
     if (typeof value === 'number') return value;
     return parseFloat(String(value).replace(/,/g, '').replace('$', '').replace(/\s/g, '')) || 0;
 };
 
+const formatDate = (dateStr) => {
+    if (!dateStr) return '';
+    if (typeof dateStr === 'string' && dateStr.length >= 10) {
+        return dateStr.substring(0, 10);
+    }
+    return dateStr;
+};
+
 const cleanText = (str) => {
     if (!str) return '';
-    return String(str).trim();
+    let cleaned = String(str);
+    cleaned = cleaned.replace(/<[^>]*>?/gm, '');
+    cleaned = cleaned.replace(/\\n/g, ' ').replace(/\n/g, ' ');
+    return cleaned.trim();
 };
 
 const normalizeCountry = (country, currency) => {
     const c = String(country || '').trim().toLowerCase();
     const cur = String(currency || '').trim().toUpperCase().replace(/\s/g, ''); 
+    
     if (c.includes('taiwan') || c.includes('台灣') || c.includes('tw')) return '台灣';
     if (c.includes('overseas') || c.includes('海外') || c.includes('foreign')) return '海外';
+    
     if (cur.includes('TWD') || cur.includes('NT') || cur.includes('臺幣') || cur.includes('台幣')) return '台灣';
+    
     return '海外'; 
 };
 
 const formatCurrency = (val) => {
-    if (val === '***') return '***'; // Masked
+    if (val === undefined || val === null) return '$0';
+    if (typeof val === 'string' && val.includes('🔒')) return val; 
     const num = Number(val);
     if (isNaN(num)) return '$0';
     return num.toLocaleString(undefined, { maximumFractionDigits: 0 });
 };
 
-const formatDate = (dateStr) => {
-    if (!dateStr) return '';
-    if (typeof dateStr === 'string' && dateStr.length >= 10) return dateStr.substring(0, 10);
-    return String(dateStr);
-};
-
 // --- Components ---
+
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error) { return { hasError: true, error }; }
+  componentDidCatch(error, errorInfo) { console.error("ErrorBoundary caught error", error, errorInfo); }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
+           <div className="bg-white p-6 rounded-xl shadow-lg max-w-md text-center">
+             <AlertCircle className="mx-auto text-red-500 mb-4" size={40}/>
+             <h2 className="text-lg font-bold mb-2">應用程式發生錯誤</h2>
+             <p className="text-sm text-gray-500 mb-4">
+               {this.state.error && this.state.error.toString()}
+             </p>
+             <button onClick={() => window.location.reload()} className="bg-indigo-600 text-white px-4 py-2 rounded-lg">重新整理</button>
+           </div>
+        </div>
+      );
+    }
+    return this.props.children; 
+  }
+}
+
+// ... [Charts Code: StackedBarChart, DonutChart] ...
 const StackedBarChart = ({ data, height = 300, type = 'region' }) => {
     if (!data || data.length === 0) return <div className="h-64 flex items-center justify-center text-slate-400">無資料可顯示圖表</div>;
     const maxValue = Math.max(...data.map(d => d.total)) || 1; 
@@ -77,13 +132,13 @@ const StackedBarChart = ({ data, height = 300, type = 'region' }) => {
         </div>
     );
 };
-
 const DonutChart = ({ v1, v2, size = 160, type = 'region' }) => {
     const total = v1 + v2; if (total === 0) return <div className="text-slate-300 text-xs">無數據</div>; const p1 = (v1 / total); const radius = size / 2; const strokeWidth = 25; const normalizedRadius = radius - strokeWidth / 2; const circumference = normalizedRadius * 2 * Math.PI; const offset1 = circumference - (p1 * circumference); const offset2 = circumference - ((1 - p1) * circumference); const colors = type === 'region' ? { c1: '#ec4899', c2: '#7c3aed' } : { c1: '#34d399', c2: '#2563eb' };
     return (<div className="relative flex items-center justify-center group"><svg height={size} width={size} viewBox={`0 0 ${size} ${size}`} className="transform -rotate-90 drop-shadow-sm"><circle stroke="#f1f5f9" strokeWidth={strokeWidth} fill="transparent" r={normalizedRadius} cx={radius} cy={radius} /><circle stroke={colors.c1} strokeWidth={strokeWidth} strokeDasharray={`${circumference} ${circumference}`} style={{ strokeDashoffset: offset1 }} fill="transparent" r={normalizedRadius} cx={radius} cy={radius} className="transition-all duration-1000 ease-out hover:stroke-[30px] cursor-pointer" /><circle stroke={colors.c2} strokeWidth={strokeWidth} strokeDasharray={`${circumference} ${circumference}`} style={{ strokeDashoffset: offset2, transformOrigin: 'center', transform: `rotate(${p1 * 360}deg)` }} fill="transparent" r={normalizedRadius} cx={radius} cy={radius} className="transition-all duration-1000 ease-out hover:stroke-[30px] cursor-pointer" /></svg><div className="absolute text-center pointer-events-none"><div className="text-[10px] text-slate-400 font-medium tracking-wider uppercase mb-0.5">Total Revenue</div><div className="text-lg font-bold text-slate-700 font-mono">{(total/10000).toFixed(0)}<span className="text-xs ml-0.5">萬</span></div></div></div>);
 };
 
-const MarketAnalysisSection = ({ transactions }) => {
+// --- Market Analysis ---
+const MarketAnalysisSection = ({ transactions, formatCurrency }) => {
     const [viewMode, setViewMode] = useState('region');
     const { monthlyData, summary } = useMemo(() => {
         const monthMap = {};
@@ -402,12 +457,38 @@ const LoginScreen = ({ onLogin, error }) => {
   )
 }
 
+// --- Sheet Setup Component ---
+const SheetSetup = ({ onSave }) => {
+  const [url, setUrl] = useState('');
+  
+  const handleSave = () => {
+      if (!url.includes('script.google.com')) {
+          alert("請輸入有效的 Google Apps Script 網址");
+          return;
+      }
+      onSave(url);
+  };
+
+  return (
+      <div className="max-w-2xl mx-auto mt-10">
+          <div className="bg-white p-8 rounded-3xl shadow-xl border border-slate-100">
+              <h3 className="text-2xl font-bold text-slate-800 text-center mb-6">系統初始化設定</h3>
+              <p className="text-slate-500 text-center mb-8 text-sm">請輸入您部署的 Google Apps Script (Web App) 網址。</p>
+              <input type="text" className="w-full border border-slate-200 rounded-xl p-3 mb-4" placeholder="https://script.google.com/macros/s/..." value={url} onChange={e => setUrl(e.target.value)} />
+              <button onClick={handleSave} className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold">儲存並連線</button>
+          </div>
+      </div>
+  );
+};
+
 // --- Main App Component ---
 export default function SalesApp() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [transactions, setTransactions] = useState([]);
+  const [gasUrl, setGasUrl] = useState(() => localStorage.getItem('vgv_gas_url') || DEFAULT_GAS_URL);
+  const [isSetup, setIsSetup] = useState(() => !!localStorage.getItem('vgv_gas_url'));
 
   // 1. Check LocalStorage for existing session
   useEffect(() => {
@@ -425,11 +506,11 @@ export default function SalesApp() {
       try {
           const formData = new FormData();
           formData.append('action', 'login');
-          formData.append('password', DEFAULT_API_PASSWORD);
+          formData.append('password', INTERNAL_API_KEY);
           formData.append('email', email);
 
           // Use POST to avoid URL length limits and cleaner URL
-          const res = await fetch(DEFAULT_GAS_URL, {
+          const res = await fetch(gasUrl, {
               method: 'POST',
               body: formData
           });
@@ -444,7 +525,7 @@ export default function SalesApp() {
           }
       } catch (e) {
           console.error(e);
-          setError('連線錯誤，請稍後再試');
+          setError('連線錯誤，請確認 GAS 網址是否正確或稍後再試');
       } finally {
           setLoading(false);
       }
@@ -455,9 +536,9 @@ export default function SalesApp() {
       try {
           const formData = new FormData();
           formData.append('action', 'getData');
-          formData.append('password', DEFAULT_API_PASSWORD);
+          formData.append('password', INTERNAL_API_KEY);
 
-          const res = await fetch(DEFAULT_GAS_URL, {
+          const res = await fetch(gasUrl, {
               method: 'POST',
               body: formData
           });
@@ -468,17 +549,9 @@ export default function SalesApp() {
               const perms = (currentUser.permissions || '').toLowerCase();
               const allowedFields = perms === 'all' ? DATA_FIELDS.map(f => f.k) : perms.split(',').map(s => s.trim());
               
-              // Map raw sheet data to our schema
-              // Note: The sheet headers should match what we expect, or we need a mapping step.
-              // For simplicity, assuming the GAS returns keys matching our expectations or we map them here.
-              // Let's map based on our known mapping since we removed the mapping UI.
-              // We need to know the sheet header names. 
-              // Assuming standard names: Date, Amount, Currency, Agent, Brand, Project, Industry, Status, Country
-              
               const mappedData = json.data.map(row => {
                   const newRow = {};
                   // Simple mapping - in a real app, this mapping should be dynamic or fixed in GAS
-                  // Here we map common Chinese headers to our keys
                   newRow.date = row['日期'] || row['Date'] || row['進件日期'];
                   newRow.amount = cleanNumber(row['金額'] || row['Amount'] || row['總金額']);
                   newRow.currency = cleanText(row['幣別'] || row['Currency']);
@@ -491,12 +564,8 @@ export default function SalesApp() {
 
                   // Permission Filtering
                   if (perms !== 'all') {
-                      // If not 'all', mask unauthorized fields
-                      // Check each key against allowed list
-                      // This is a basic implementation. 
-                      // For example, if 'amount' is not in allowedFields, set it to 0
                       if (!allowedFields.includes('amount')) newRow.amount = 0;
-                      // You can add more masking here
+                      // Add more field masking logic here if needed
                   }
                   return newRow;
               });
@@ -518,6 +587,16 @@ export default function SalesApp() {
       setTransactions([]);
       localStorage.removeItem('vgv_user');
   };
+  
+  const handleSaveSetup = (url) => {
+      setGasUrl(url);
+      localStorage.setItem('vgv_gas_url', url);
+      setIsSetup(true);
+  };
+
+  if (!isSetup) {
+      return <SheetSetup onSave={handleSaveSetup} />;
+  }
 
   if (!user) {
       return <LoginScreen onLogin={handleLogin} error={error} />;
@@ -562,7 +641,7 @@ export default function SalesApp() {
           </div>
         </aside>
         <main className="flex-1 p-4 lg:p-10 overflow-y-auto bg-[#f8fafc]">
-             <Dashboard transactions={transactions} loading={loading} error={error} onRefresh={() => fetchData(user)} />
+             <Dashboard transactions={transactions} loading={loading} error={error} onRefresh={() => fetchData(user)} user={user} />
         </main>
       </div>
     </div>
