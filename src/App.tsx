@@ -1,12 +1,11 @@
 /**
  * ============================================================================
- * 🚀 業績戰情室 - Google Sheet 極速驗證版
+ * 🚀 業績戰情室 - 最終極速版 (Local Cache + No Password UI)
  * ============================================================================
- * 1. 移除 API 密碼：完全依賴 Google Sheet 的 Email 名單進行驗證。
- * 2. 解決載入緩慢：
- * - 後端移除讀取鎖 (LockService)。
- * - 前端優先讀取 LocalStorage 快取。
- * 3. 安全性：後端只對名單內的 Email 回傳資料。
+ * 優化內容：
+ * 1. [UI] 移除 API 密碼輸入框 (背景自動處理)。
+ * 2. [UX] 實作資料快取 (localStorage)，達成「秒開」體驗。
+ * 3. [UX] 採用「背景更新」策略，優先顯示舊資料，不卡轉圈圈。
  * ============================================================================
  */
 
@@ -17,10 +16,13 @@ import {
   Link as LinkIcon, FileSpreadsheet, HelpCircle, Lock, ShieldCheck, 
   Activity, Wand2, AlertTriangle, ExternalLink, Play, Filter, PieChart, 
   Lightbulb, Save, Trash2, Tag, LayoutDashboard, MapPin, Building2, 
-  UserCheck, List, Trophy, Calculator, LogOut, Shield, Key, Eye, EyeOff, Plus, LogIn, Mail, Check
+  UserCheck, List, Trophy, Calculator, LogOut, Shield, Key, Eye, EyeOff, Plus, LogIn, Mail, Check, Download
 } from 'lucide-react';
 
-// 預設 GAS URL (若您有固定的 URL，可直接填入此處，使用者就不用第一次設定)
+// --- 內部設定 ---
+// 這是後端 GAS 腳本中設定的簡易密碼，前端直接內建即可，不需要使用者輸入
+const INTERNAL_API_KEY = "vgv2025"; 
+// 預設 GAS URL
 const DEFAULT_GAS_URL = ""; 
 
 // 資料欄位定義
@@ -53,6 +55,7 @@ const cleanNumber = (value) => {
 
 const formatDate = (dateStr) => {
     if (!dateStr) return '';
+    // 嘗試解析日期
     const d = new Date(dateStr);
     if (!isNaN(d.getTime())) {
         return d.toISOString().split('T')[0];
@@ -68,21 +71,26 @@ const cleanText = (str) => {
 const normalizeCountry = (country, currency) => {
     const c = String(country || '').trim().toLowerCase();
     const cur = String(currency || '').trim().toUpperCase().replace(/\s/g, ''); 
+    
     if (c.includes('taiwan') || c.includes('台灣') || c.includes('tw')) return '台灣';
     if (c.includes('overseas') || c.includes('海外') || c.includes('foreign')) return '海外';
+    
     if (cur.includes('TWD') || cur.includes('NT') || cur.includes('臺幣') || cur.includes('台幣')) return '台灣';
+    
     return '海外'; 
 };
 
 const formatCurrency = (val) => {
     if (val === undefined || val === null) return '$0';
+    // 如果是被遮蔽的資料
     if (val === '***' || (typeof val === 'string' && val.includes('🔒'))) return '🔒'; 
+    
     const num = Number(val);
     if (isNaN(num)) return '$0';
     return num.toLocaleString(undefined, { maximumFractionDigits: 0 });
 };
 
-// --- Components ---
+// --- UI Components ---
 
 // 1. Error Boundary
 class ErrorBoundary extends React.Component {
@@ -197,6 +205,7 @@ const DonutChart = ({ v1, v2, size = 160, type = 'region' }) => {
 // 3. Analysis Section
 const MarketAnalysisSection = ({ transactions }) => {
     const [viewMode, setViewMode] = useState('region');
+
     const { monthlyData, summary } = useMemo(() => {
         const monthMap = {};
         const sum = { 
@@ -637,9 +646,17 @@ export default function SalesApp() {
   // 1. Check LocalStorage for existing session
   useEffect(() => {
       const savedUser = localStorage.getItem('vgv_user');
+      // 先載入已快取的使用者，讓畫面秒開
       if (savedUser) {
           const parsedUser = JSON.parse(savedUser);
           setUser(parsedUser);
+          // 嘗試載入快取的交易資料 (如果有)
+          const savedData = localStorage.getItem('vgv_data');
+          if (savedData) {
+             setTransactions(JSON.parse(savedData));
+          }
+          
+          // 背景執行更新
           fetchData(parsedUser);
       }
   }, []);
@@ -676,7 +693,9 @@ export default function SalesApp() {
   };
 
   const fetchData = async (currentUser) => {
-      setLoading(true);
+      // Only show loading spinner if we don't have data yet
+      if (transactions.length === 0) setLoading(true);
+      
       try {
           const formData = new FormData();
           formData.append('action', 'getData');
@@ -695,7 +714,7 @@ export default function SalesApp() {
               
               const mappedData = json.data.map(row => {
                   const newRow = {};
-                  // Simple mapping - in a real app, this mapping should be dynamic or fixed in GAS
+                  // Mapping: Map raw sheet data to our schema
                   newRow.date = row['日期'] || row['Date'] || row['進件日期'];
                   newRow.amount = cleanNumber(row['金額'] || row['Amount'] || row['總金額']);
                   newRow.currency = cleanText(row['幣別'] || row['Currency']);
@@ -706,21 +725,25 @@ export default function SalesApp() {
                   newRow.status = cleanText(row['狀態'] || row['Status'] || row['客戶狀態']);
                   newRow.country = cleanText(row['國家'] || row['Country'] || row['國別']);
 
-                  // Permission Filtering
+                  // Permission Filtering: Mask unauthorized fields
                   if (perms !== 'all') {
-                      if (!allowedFields.includes('amount')) newRow.amount = 0;
-                      // Add more field masking logic here if needed
+                      if (!allowedFields.includes('amount')) newRow.amount = 0; 
+                      // You can add other field masking here if needed, e.g.:
+                      // if (!allowedFields.includes('agentName')) newRow.agentName = '***';
                   }
                   return newRow;
               });
 
               setTransactions(mappedData);
+              // Cache data for next load
+              localStorage.setItem('vgv_data', JSON.stringify(mappedData));
           } else {
               setError(json.message);
           }
       } catch (e) {
           console.error(e);
-          setError('資料讀取失敗');
+          // If fetch fails but we have cached data, don't show error to user immediately
+          if (transactions.length === 0) setError('資料讀取失敗');
       } finally {
           setLoading(false);
       }
@@ -730,6 +753,7 @@ export default function SalesApp() {
       setUser(null);
       setTransactions([]);
       localStorage.removeItem('vgv_user');
+      localStorage.removeItem('vgv_data'); // Clear data cache on logout
   };
   
   const handleSaveSetup = (url) => {
