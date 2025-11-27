@@ -1,12 +1,12 @@
 /**
  * ============================================================================
- * 🚀 業績戰情室 - Google Sheet 極速版 (No-Firebase) - 最終修復
+ * 🚀 業績戰情室 - Google Sheet 極速驗證版
  * ============================================================================
- * 架構：React Frontend -> Google Apps Script API -> Google Sheets Database
- * 優點：
- * 1. 秒開：移除 Firebase SDK，體積小，啟動快。
- * 2. 快取：記住登入狀態與 GAS 網址，F5 重新整理不用重登。
- * 3. 安全：權限邏輯由後端 (GAS) 與前端雙重控管。
+ * 1. 移除 API 密碼：完全依賴 Google Sheet 的 Email 名單進行驗證。
+ * 2. 解決載入緩慢：
+ * - 後端移除讀取鎖 (LockService)。
+ * - 前端優先讀取 LocalStorage 快取。
+ * 3. 安全性：後端只對名單內的 Email 回傳資料。
  * ============================================================================
  */
 
@@ -20,14 +20,10 @@ import {
   UserCheck, List, Trophy, Calculator, LogOut, Shield, Key, Eye, EyeOff, Plus, LogIn, Mail, Check
 } from 'lucide-react';
 
-// --- 內部設定 ---
-const INTERNAL_API_KEY = "vgv2025"; // 與 GAS 對接的通關密語
-
-// 定義一個預設的 GAS URL 變數，避免 ReferenceError
-// 如果沒有預設值，請設為空字串或範例網址
+// 預設 GAS URL (若您有固定的 URL，可直接填入此處，使用者就不用第一次設定)
 const DEFAULT_GAS_URL = ""; 
 
-// 定義資料欄位對應 (用於權限過濾顯示)
+// 資料欄位定義
 const DATA_FIELDS = [
     { k: 'date', l: '進件日期', i: Activity },
     { k: 'amount', l: '金額', i: DollarSign },
@@ -57,7 +53,6 @@ const cleanNumber = (value) => {
 
 const formatDate = (dateStr) => {
     if (!dateStr) return '';
-    // 嘗試解析日期
     const d = new Date(dateStr);
     if (!isNaN(d.getTime())) {
         return d.toISOString().split('T')[0];
@@ -73,26 +68,21 @@ const cleanText = (str) => {
 const normalizeCountry = (country, currency) => {
     const c = String(country || '').trim().toLowerCase();
     const cur = String(currency || '').trim().toUpperCase().replace(/\s/g, ''); 
-    
     if (c.includes('taiwan') || c.includes('台灣') || c.includes('tw')) return '台灣';
     if (c.includes('overseas') || c.includes('海外') || c.includes('foreign')) return '海外';
-    
     if (cur.includes('TWD') || cur.includes('NT') || cur.includes('臺幣') || cur.includes('台幣')) return '台灣';
-    
     return '海外'; 
 };
 
 const formatCurrency = (val) => {
     if (val === undefined || val === null) return '$0';
-    // 如果是被遮蔽的資料
     if (val === '***' || (typeof val === 'string' && val.includes('🔒'))) return '🔒'; 
-    
     const num = Number(val);
     if (isNaN(num)) return '$0';
     return num.toLocaleString(undefined, { maximumFractionDigits: 0 });
 };
 
-// --- UI Components ---
+// --- Components ---
 
 // 1. Error Boundary
 class ErrorBoundary extends React.Component {
@@ -207,7 +197,6 @@ const DonutChart = ({ v1, v2, size = 160, type = 'region' }) => {
 // 3. Analysis Section
 const MarketAnalysisSection = ({ transactions }) => {
     const [viewMode, setViewMode] = useState('region');
-
     const { monthlyData, summary } = useMemo(() => {
         const monthMap = {};
         const sum = { 
@@ -222,8 +211,7 @@ const MarketAnalysisSection = ({ transactions }) => {
             if (isNaN(date.getTime())) return;
             const monthKey = `${date.getFullYear()}年${date.getMonth()+1}月`;
             const amt = t.finalAmount;
-            const clientName = (t.brandName || t.projectName || '').toLowerCase();
-            const isIherb = clientName.includes('iherb');
+            const isIherb = (t.brandName || '').toLowerCase().includes('iherb') || (t.projectName || '').toLowerCase().includes('iherb');
             
             let isKey1 = false;
             if (viewMode === 'region') {
@@ -234,13 +222,7 @@ const MarketAnalysisSection = ({ transactions }) => {
             }
 
             if (!monthMap[monthKey]) {
-                monthMap[monthKey] = { 
-                    month: monthKey, 
-                    total: 0, 
-                    sortKey: date.getTime(),
-                    taiwan: 0, overseas: 0,
-                    newClient: 0, oldClient: 0
-                };
+                monthMap[monthKey] = { month: monthKey, total: 0, sortKey: date.getTime(), taiwan: 0, overseas: 0, newClient: 0, oldClient: 0 };
             }
 
             monthMap[monthKey].total += amt;
@@ -254,9 +236,6 @@ const MarketAnalysisSection = ({ transactions }) => {
 
             const target = isKey1 ? sum.s1 : sum.s2;
             target.revenue += amt;
-            target.brands.add(t.brandName || t.projectName);
-            target.projects.add(t.projectName);
-
             if (!isIherb) {
                 target.revenueNoIherb += amt;
                 target.countNoIherb += 1;
@@ -270,9 +249,8 @@ const MarketAnalysisSection = ({ transactions }) => {
         return { monthlyData: sortedMonths, summary: sum };
     }, [transactions, viewMode]);
 
-    const totalRevenue = summary.s1.revenue + summary.s2.revenue;
-    const share1 = totalRevenue > 0 ? Math.round((summary.s1.revenue / totalRevenue) * 100) : 0;
-    const share2 = totalRevenue > 0 ? Math.round((summary.s2.revenue / totalRevenue) * 100) : 0;
+    const share1 = (summary.s1.revenue + summary.s2.revenue) > 0 ? Math.round((summary.s1.revenue / (summary.s1.revenue + summary.s2.revenue)) * 100) : 0;
+    const share2 = (summary.s1.revenue + summary.s2.revenue) > 0 ? Math.round((summary.s2.revenue / (summary.s1.revenue + summary.s2.revenue)) * 100) : 0;
 
     const config = viewMode === 'region' ? {
         icon: MapPin, bgIcon: 'bg-pink-100', textIcon: 'text-pink-600',
@@ -281,7 +259,7 @@ const MarketAnalysisSection = ({ transactions }) => {
         colorText1: 'text-pink-500', colorText2: 'text-purple-600',
         grad1: 'from-pink-50 to-pink-100/50', border1: 'border-pink-100', title1: 'text-pink-400',
         grad2: 'from-purple-50 to-purple-100/50', border2: 'border-purple-100', title2: 'text-purple-400',
-        dotClass1: 'bg-pink-500', dotClass2: 'bg-purple-600', chartType: 'region'
+        chartType: 'region'
     } : {
         icon: UserCheck, bgIcon: 'bg-emerald-100', textIcon: 'text-emerald-600',
         badge1: 'bg-emerald-50 text-emerald-700 border-emerald-100', dot1: 'bg-emerald-400',
@@ -289,123 +267,25 @@ const MarketAnalysisSection = ({ transactions }) => {
         colorText1: 'text-emerald-500', colorText2: 'text-blue-600',
         grad1: 'from-emerald-50 to-emerald-100/50', border1: 'border-emerald-100', title1: 'text-emerald-400',
         grad2: 'from-blue-50 to-blue-100/50', border2: 'border-blue-100', title2: 'text-blue-400',
-        dotClass1: 'bg-emerald-500', dotClass2: 'bg-blue-600', chartType: 'status'
+        chartType: 'status'
     };
 
     return (
         <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden mb-8">
             <div className="px-6 py-5 border-b border-slate-100 flex flex-col md:flex-row justify-between items-center bg-slate-50/50 gap-4">
-                <h3 className="font-bold text-slate-800 flex items-center text-lg">
-                    <div className={`${config.bgIcon} p-1.5 rounded-lg mr-3 ${config.textIcon}`}>
-                        <config.icon size={18}/>
-                    </div>
-                    市場分析
-                </h3>
-                
-                <div className="flex bg-slate-200 p-1 rounded-xl">
-                    <button 
-                        onClick={() => setViewMode('region')}
-                        className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${viewMode === 'region' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                    >
-                        區域分佈
-                    </button>
-                    <button 
-                        onClick={() => setViewMode('status')}
-                        className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${viewMode === 'status' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                    >
-                        新舊客分析
-                    </button>
-                </div>
+                <h3 className="font-bold text-slate-800 flex items-center text-lg"><div className={`${config.bgIcon} p-1.5 rounded-lg mr-3 ${config.textIcon}`}><config.icon size={18}/></div>市場分析</h3>
+                <div className="flex bg-slate-200 p-1 rounded-xl"><button onClick={() => setViewMode('region')} className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${viewMode === 'region' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>區域分佈</button><button onClick={() => setViewMode('status')} className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${viewMode === 'status' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>新舊客分析</button></div>
             </div>
-            
             <div className="p-8 grid grid-cols-1 lg:grid-cols-3 gap-10">
-                {/* Left: Trend Chart */}
                 <div className="lg:col-span-2 flex flex-col">
-                    <div className="flex items-center justify-between mb-6">
-                        <h4 className="text-sm font-bold text-slate-500 flex items-center">
-                            <Activity size={14} className="mr-1"/> 近六個月{viewMode === 'region' ? '區域' : '新舊客'}業績趨勢
-                        </h4>
-                        <div className="flex gap-4 text-xs font-medium">
-                            <div className={`flex items-center px-2 py-1 rounded-full border ${config.badge1}`}>
-                                <span className={`w-2 h-2 rounded-full ${config.dot1} mr-2`}></span>{summary.s1.label}
-                            </div>
-                            <div className={`flex items-center px-2 py-1 rounded-full border ${config.badge2}`}>
-                                <span className={`w-2 h-2 rounded-full ${config.dot2} mr-2`}></span>{summary.s2.label}
-                            </div>
-                        </div>
-                    </div>
-                    <div className="flex-1 min-h-[320px] bg-slate-50/30 rounded-2xl p-4 border border-slate-100">
-                        <StackedBarChart data={monthlyData} type={config.chartType} />
-                    </div>
+                    <div className="flex items-center justify-between mb-6"><h4 className="text-sm font-bold text-slate-500 flex items-center"><Activity size={14} className="mr-1"/> 近六個月{viewMode === 'region' ? '區域' : '新舊客'}業績趨勢</h4><div className="flex gap-4 text-xs font-medium"><div className={`flex items-center px-2 py-1 rounded-full border ${config.badge1}`}><span className={`w-2 h-2 rounded-full ${config.dot1} mr-2`}></span>{summary.s1.label}</div><div className={`flex items-center px-2 py-1 rounded-full border ${config.badge2}`}><span className={`w-2 h-2 rounded-full ${config.dot2} mr-2`}></span>{summary.s2.label}</div></div></div>
+                    <div className="flex-1 min-h-[320px] bg-slate-50/30 rounded-2xl p-4 border border-slate-100"><StackedBarChart data={monthlyData} type={config.chartType} /></div>
                 </div>
-
-                {/* Right: Breakdown & Stats */}
                 <div className="flex flex-col gap-6">
-                    <div className="flex flex-col items-center justify-center bg-white rounded-2xl p-6 border border-slate-100 shadow-sm">
-                        <h4 className="text-sm font-bold text-slate-500 mb-6 w-full text-left flex items-center">
-                            <PieChart size={14} className="mr-1"/> {viewMode === 'region' ? '市場佔比' : '新舊佔比'}
-                        </h4>
-                        <div className="flex items-center justify-between w-full px-2">
-                            <DonutChart v1={summary.s1.revenue} v2={summary.s2.revenue} type={config.chartType} />
-                            <div className="space-y-4 text-sm pl-4 border-l border-slate-100 ml-4">
-                                <div>
-                                    <div className={`${config.colorText1} font-bold text-2xl`}>{share1}<span className="text-sm ml-0.5">%</span></div>
-                                    <div className="text-slate-400 text-xs font-medium">{summary.s1.label}</div>
-                                </div>
-                                <div>
-                                    <div className={`${config.colorText2} font-bold text-2xl`}>{share2}<span className="text-sm ml-0.5">%</span></div>
-                                    <div className="text-slate-400 text-xs font-medium">{summary.s2.label}</div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
+                    <div className="flex flex-col items-center justify-center bg-white rounded-2xl p-6 border border-slate-100 shadow-sm"><h4 className="text-sm font-bold text-slate-500 mb-6 w-full text-left flex items-center"><PieChart size={14} className="mr-1"/> {viewMode === 'region' ? '市場佔比' : '新舊佔比'}</h4><div className="flex items-center justify-between w-full px-2"><DonutChart v1={summary.s1.revenue} v2={summary.s2.revenue} type={config.chartType} /><div className="space-y-4 text-sm pl-4 border-l border-slate-100 ml-4"><div><div className={`${config.colorText1} font-bold text-2xl`}>{share1}<span className="text-sm ml-0.5">%</span></div><div className="text-slate-400 text-xs font-medium">{summary.s1.label}</div></div><div><div className={`${config.colorText2} font-bold text-2xl`}>{share2}<span className="text-sm ml-0.5">%</span></div><div className="text-slate-400 text-xs font-medium">{summary.s2.label}</div></div></div></div></div>
                     <div className="grid grid-cols-2 gap-4">
-                        {/* Stat Card 1 */}
-                        <div className="space-y-3 group">
-                            <div className={`flex items-center ${config.colorText1.replace('text-', 'text-opacity-80')} font-bold text-sm mb-2`}>
-                                <span className={`w-1.5 h-1.5 rounded-full ${config.dotClass1} mr-2 group-hover:scale-125 transition-transform`}></span>
-                                {summary.s1.label}
-                            </div>
-                            <div className={`bg-gradient-to-br ${config.grad1} p-4 rounded-xl border ${config.border1}`}>
-                                <div className={`text-[10px] ${config.title1} font-bold uppercase tracking-wider mb-1`}>Revenue</div>
-                                <div className="font-bold text-slate-700 text-lg">{formatCurrency(summary.s1.revenue)}</div>
-                            </div>
-                            <div className="bg-white border border-slate-100 p-3 rounded-xl flex flex-col gap-1">
-                                <div className="text-xs text-slate-400 flex items-center gap-1">
-                                    <Calculator size={12} />
-                                    <span>平均成交 (除 Iherb)</span>
-                                </div>
-                                <div className="font-bold text-slate-700 font-mono">{formatCurrency(summary.s1.avgDeal)}</div>
-                            </div>
-                            <div className="bg-white border border-slate-100 p-3 rounded-xl flex justify-between items-center">
-                                <div className="text-xs text-slate-400">專案數</div>
-                                <div className="font-bold text-slate-700 bg-slate-100 px-2 py-0.5 rounded">{summary.s1.projects.size}</div>
-                            </div>
-                        </div>
-
-                        {/* Stat Card 2 */}
-                        <div className="space-y-3 group">
-                            <div className={`flex items-center ${config.colorText2.replace('text-', 'text-opacity-80')} font-bold text-sm mb-2`}>
-                                <span className={`w-1.5 h-1.5 rounded-full ${config.dotClass2} mr-2 group-hover:scale-125 transition-transform`}></span>
-                                {summary.s2.label}
-                            </div>
-                            <div className={`bg-gradient-to-br ${config.grad2} p-4 rounded-xl border ${config.border2}`}>
-                                <div className={`text-[10px] ${config.title2} font-bold uppercase tracking-wider mb-1`}>Revenue</div>
-                                <div className="font-bold text-slate-700 text-lg">{formatCurrency(summary.s2.revenue)}</div>
-                            </div>
-                            <div className="bg-white border border-slate-100 p-3 rounded-xl flex flex-col gap-1">
-                                <div className="text-xs text-slate-400 flex items-center gap-1">
-                                    <Calculator size={12} />
-                                    <span>平均成交 (除 Iherb)</span>
-                                </div>
-                                <div className="font-bold text-slate-700 font-mono">{formatCurrency(summary.s2.avgDeal)}</div>
-                            </div>
-                            <div className="bg-white border border-slate-100 p-3 rounded-xl flex justify-between items-center">
-                                <div className="text-xs text-slate-400">專案數</div>
-                                <div className="font-bold text-slate-700 bg-slate-100 px-2 py-0.5 rounded">{summary.s2.projects.size}</div>
-                            </div>
-                        </div>
+                        <div className="space-y-3 group"><div className={`flex items-center ${config.colorText1.replace('text-', 'text-opacity-80')} font-bold text-sm mb-2`}><span className={`w-1.5 h-1.5 rounded-full ${config.dotClass1} mr-2 group-hover:scale-125 transition-transform`}></span>{summary.s1.label}</div><div className={`bg-gradient-to-br ${config.grad1} p-4 rounded-xl border ${config.border1}`}><div className={`text-[10px] ${config.title1} font-bold uppercase tracking-wider mb-1`}>Revenue</div><div className="font-bold text-slate-700 text-lg">{formatCurrency(summary.s1.revenue)}</div></div><div className="bg-white border border-slate-100 p-3 rounded-xl flex flex-col gap-1"><div className="text-xs text-slate-400 flex items-center gap-1"><Calculator size={12} /><span>平均成交 (除 Iherb)</span></div><div className="font-bold text-slate-700 font-mono">{formatCurrency(summary.s1.avgDeal)}</div></div><div className="bg-white border border-slate-100 p-3 rounded-xl flex justify-between items-center"><div className="text-xs text-slate-400">專案數</div><div className="font-bold text-slate-700 bg-slate-100 px-2 py-0.5 rounded">{summary.s1.projects.size}</div></div></div>
+                        <div className="space-y-3 group"><div className={`flex items-center ${config.colorText2.replace('text-', 'text-opacity-80')} font-bold text-sm mb-2`}><span className={`w-1.5 h-1.5 rounded-full ${config.dotClass2} mr-2 group-hover:scale-125 transition-transform`}></span>{summary.s2.label}</div><div className={`bg-gradient-to-br ${config.grad2} p-4 rounded-xl border ${config.border2}`}><div className={`text-[10px] ${config.title2} font-bold uppercase tracking-wider mb-1`}>Revenue</div><div className="font-bold text-slate-700 text-lg">{formatCurrency(summary.s2.revenue)}</div></div><div className="bg-white border border-slate-100 p-3 rounded-xl flex flex-col gap-1"><div className="text-xs text-slate-400 flex items-center gap-1"><Calculator size={12} /><span>平均成交 (除 Iherb)</span></div><div className="font-bold text-slate-700 font-mono">{formatCurrency(summary.s2.avgDeal)}</div></div><div className="bg-white border border-slate-100 p-3 rounded-xl flex justify-between items-center"><div className="text-xs text-slate-400">專案數</div><div className="font-bold text-slate-700 bg-slate-100 px-2 py-0.5 rounded">{summary.s2.projects.size}</div></div></div>
                     </div>
                 </div>
             </div>
@@ -421,10 +301,7 @@ const DetailModal = ({ title, icon: Icon, transactions, onClose }) => {
     <div className="fixed inset-0 bg-slate-900/40 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-300">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[85vh] flex flex-col animate-in zoom-in-95 duration-300 border border-white/20 overflow-hidden">
         <div className="px-6 py-5 border-b border-indigo-100 flex justify-between items-center bg-indigo-50">
-          <div className="flex items-center gap-4">
-              <div className="p-3 rounded-xl bg-white shadow-sm text-indigo-600"><Icon size={24} strokeWidth={2} /></div>
-              <div><h3 className="text-xl font-bold text-slate-800 tracking-tight">{title}</h3><p className="text-sm text-indigo-600 font-medium mt-0.5 opacity-90">共 {sortedTransactions.length} 筆案件</p></div>
-          </div>
+          <div className="flex items-center gap-4"><div className="p-3 rounded-xl bg-white shadow-sm text-indigo-600"><Icon size={24} strokeWidth={2} /></div><div><h3 className="text-xl font-bold text-slate-800 tracking-tight">{title}</h3><p className="text-sm text-indigo-600 font-medium mt-0.5 opacity-90">共 {sortedTransactions.length} 筆案件</p></div></div>
           <button onClick={onClose} className="p-2 hover:bg-white/60 rounded-full transition-all duration-200 text-slate-400 hover:text-slate-700 hover:rotate-90"><X size={24} /></button>
         </div>
         <div className="overflow-y-auto p-0 flex-1 bg-white">
@@ -508,11 +385,9 @@ const Dashboard = ({ transactions, loading, error, onRefresh, user }) => {
   const [selectedIndustry, setSelectedIndustry] = useState(null); 
   const [selectedClient, setSelectedClient] = useState(null); 
   const [selectedStatus, setSelectedStatus] = useState(null); 
-  
   const [showAllDetails, setShowAllDetails] = useState(false);
   const [showAgentRanking, setShowAgentRanking] = useState(false);
   const [showIndustryRanking, setShowIndustryRanking] = useState(false);
-
   const [exchangeRate, setExchangeRate] = useState(32.5); 
   
   useEffect(() => {
