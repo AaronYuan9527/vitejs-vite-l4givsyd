@@ -752,7 +752,7 @@ const Dashboard = ({ transactions, loading, error, onRefresh, user }) => {
   const [includeIherb, setIncludeIherb] = useState(true); // true=包含Iherb, false=排除Iherb
   const [showAgentRanking, setShowAgentRanking] = useState(false);
   const [showIndustryRanking, setShowIndustryRanking] = useState(false);
-  const [chatOpen, setChatOpen] = useState(false);
+  // chatOpen 已移至主組件
   // 固定匯率顯示用（實際換算在 fetchData 內：USD×30, HKD×4）
   
   // 固定匯率：USD × 30，HKD × 4（已移至 fetchData，此處僅保留顯示用）
@@ -895,7 +895,7 @@ const Dashboard = ({ transactions, loading, error, onRefresh, user }) => {
 
   return (
     <div className="space-y-8 relative max-w-[1600px] mx-auto pb-12">
-      {chatOpen && <ChatPanel onClose={() => setChatOpen(false)} user={user} />}
+      {/* ChatPanel 已移至主組件 */}
       {selectedBD && <DetailModal title={selectedBD} icon={Users} transactions={filteredData.filter(t => {
         // BU 模式：比對 BU，業務模式：比對 agentName
         if (useBuFilter) {
@@ -1023,14 +1023,7 @@ const Dashboard = ({ transactions, loading, error, onRefresh, user }) => {
           <div className="overflow-x-auto max-h-[500px]"><table className="w-full text-sm"><thead className="sticky top-0 bg-white z-10 shadow-sm text-slate-500 font-semibold text-xs uppercase tracking-wider"><tr><th className="px-6 py-4 text-left bg-slate-50/80 backdrop-blur">品牌名稱</th><th className="px-6 py-4 text-right bg-slate-50/80 backdrop-blur">貢獻業績</th><th className="px-4 py-4 bg-slate-50/80 backdrop-blur w-10"></th></tr></thead><tbody className="divide-y divide-slate-50">{stats.clientRanking.map((client, idx) => (<tr key={client.name} onClick={() => setSelectedClient(client.name)} className="hover:bg-amber-50/50 cursor-pointer group transition-all duration-200"><td className="px-6 py-4 font-medium text-slate-700 flex items-center"><div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold mr-3 ${idx < 3 ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-500'}`}>{idx + 1}</div><span className="truncate max-w-[150px]" title={client.name}>{client.name}</span></td><td className="px-6 py-4 text-right font-bold text-amber-600 font-mono">{formatCurrency(client.revenue)}</td><td className="px-4 py-4 text-center text-slate-300 group-hover:text-amber-400 transition-colors"><ChevronRight size={16} /></td></tr>))}</tbody></table></div>
         </div>
       </div>
-      {/* AI 助手按鈕 */}
-      <button
-        onClick={() => setChatOpen(true)}
-        className="fixed bottom-6 right-6 w-14 h-14 bg-gradient-to-r from-indigo-500 to-purple-500 text-white rounded-full shadow-xl hover:shadow-2xl hover:scale-110 transition-all flex items-center justify-center text-2xl z-40"
-        title="AI 智能助手"
-      >
-        🤖
-      </button>
+      {/* AI 助手按鈕已移至主組件（全域顯示） */}
     </div>
   );
 };
@@ -1241,6 +1234,7 @@ export default function SalesApp() {
   const [transactions, setTransactions] = useState([]);
   const [adminUsers, setAdminUsers] = useState([]); 
   const [activeTab, setActiveTab] = useState('dashboard');
+  const [chatOpen, setChatOpen] = useState(false);
 
   const gasUrl = DEFAULT_GAS_URL; 
 
@@ -1510,7 +1504,15 @@ export default function SalesApp() {
       console.log('[saveUserConfig] 參數:', params);
       
       try {
-          const result = await gasPost(gasUrl, params);
+          // 設定 30 秒超時提示
+          const timeoutPromise = new Promise((_, reject) => {
+              setTimeout(() => reject(new Error('請求超時（30秒），請檢查網路連線')), 30000);
+          });
+          
+          const result = await Promise.race([
+              gasPost(gasUrl, params),
+              timeoutPromise
+          ]);
           console.log('[saveUserConfig] GAS 回應:', result);
           
           if (result.status === 'success') {
@@ -1598,6 +1600,16 @@ export default function SalesApp() {
           </main>
         </div>
       </ErrorBoundary>
+      
+      {/* AI 助手功能（全域顯示） */}
+      {chatOpen && <ChatPanel onClose={() => setChatOpen(false)} user={user} />}
+      <button
+        onClick={() => setChatOpen(true)}
+        className="fixed bottom-6 right-6 w-14 h-14 bg-gradient-to-r from-indigo-500 to-purple-500 text-white rounded-full shadow-xl hover:shadow-2xl hover:scale-110 transition-all flex items-center justify-center text-2xl z-50"
+        title="AI 智能助手"
+      >
+        🤖
+      </button>
     </div>
   );
 }
