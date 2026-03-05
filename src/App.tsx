@@ -535,26 +535,34 @@ const AdminPanel = ({ users, onSave, onRefreshUsers, loading }) => {
     const bottomRef = useRef(null); 
 
     useEffect(() => {
-        if (users) setEditedUsers(JSON.parse(JSON.stringify(users)));
-    }, [users]);
+        if (users && !isSaving) {
+            // 只有在非儲存狀態時才同步，避免儲存過程中被覆蓋
+            setEditedUsers(JSON.parse(JSON.stringify(users)));
+            console.log('[AdminPanel] 同步使用者列表，共', users.length, '位');
+        }
+    }, [users, isSaving]);
 
     const handlePermissionChange = (email, field, checked) => {
         setEditedUsers(prev => prev.map(u => {
             if (u.email === email) {
-                const perms = u.permissions === 'all' ? DATA_FIELDS.map(f=>f.k) : u.permissions.split(',').map(s=>s.trim());
+                const perms = u.permissions === 'all' ? DATA_FIELDS.map(f=>f.k) : u.permissions.split(',').map(s=>s.trim()).filter(s => s);
                 let newPerms;
                 if (checked) {
                     if (!perms.includes(field)) newPerms = [...perms, field];
                     else newPerms = perms;
                 }
                 else newPerms = perms.filter(p => p !== field);
-                return { ...u, permissions: newPerms.join(',') };
+                
+                const newPermStr = newPerms.join(',');
+                console.log('[AdminPanel] 權限變更:', email, '| field:', field, '| checked:', checked, '| new permissions:', newPermStr);
+                return { ...u, permissions: newPermStr };
             }
             return u;
         }));
     };
 
     const handleRoleChange = (email, role) => {
+        console.log('[AdminPanel] 角色變更:', email, '→', role);
         setEditedUsers(prev => prev.map(u => u.email === email ? { ...u, role } : u));
     };
     
@@ -578,15 +586,29 @@ const AdminPanel = ({ users, onSave, onRefreshUsers, loading }) => {
         if (!confirm('確定要儲存所有變更嗎？')) return;
         setIsSaving(true);
         
+        const results = [];
         try {
             for (const user of editedUsers) {
+                console.log('[AdminPanel] 儲存使用者:', user.email, '| role:', user.role, '| permissions:', user.permissions);
                 const res = await onSave(user);
-                if (res.status !== 'success') throw new Error(res.message || 'Unknown Error');
+                console.log('[AdminPanel] GAS 回應:', res);
+                
+                results.push({ email: user.email, status: res.status, message: res.message });
+                
+                if (res.status !== 'success') {
+                    throw new Error(`${user.email}: ${res.message || 'Unknown Error'}`);
+                }
             }
-            alert('儲存完成');
+            
+            console.log('[AdminPanel] 全部儲存成功，準備刷新使用者列表');
+            alert('儲存完成！共 ' + results.length + ' 位使用者');
+            
+            // 延遲 1 秒再刷新，確保 GAS 已寫入
+            await new Promise(resolve => setTimeout(resolve, 1000));
             onRefreshUsers();
         } catch(e) {
-            alert('儲存失敗：' + e.message);
+            console.error('[AdminPanel] 儲存失敗:', e);
+            alert('儲存失敗：' + e.message + '\n\n已成功: ' + results.filter(r => r.status === 'success').map(r => r.email).join(', '));
         } finally {
             setIsSaving(false);
         }
@@ -1480,8 +1502,19 @@ export default function SalesApp() {
   const fetchUsers = async () => {
       if (user?.role !== 'admin') return;
       const t = localStorage.getItem('vgv_token') || '';
-      const json = await gasPost(gasUrl, { action: 'getUsers', token: t });
-      if (json.status === 'success') setAdminUsers(json.users);
+      console.log('[fetchUsers] 開始拉取使用者列表...');
+      try {
+          const json = await gasPost(gasUrl, { action: 'getUsers', token: t });
+          console.log('[fetchUsers] GAS 回應:', json);
+          if (json.status === 'success') {
+              setAdminUsers(json.users);
+              console.log('[fetchUsers] 成功載入', json.users.length, '位使用者');
+          } else {
+              console.error('[fetchUsers] 失敗:', json.message);
+          }
+      } catch (e) {
+          console.error('[fetchUsers] 錯誤:', e);
+      }
   };
 
   const saveUserConfig = async (userData, isReset = false) => {
